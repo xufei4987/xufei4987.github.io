@@ -1,0 +1,140 @@
+# k8s入门学习
+
+## k8s环境搭建
+
+### 安装docker
+
+```shell
+# centos8安装docker
+# 配置yum源
+mv /etc/yum.repos.d/CentOS-Linux-BaseOS.repo /etc/yum.repos.d/CentOS-Linux-BaseOS.repo.bak
+# 下载阿里云源
+wget -O /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-8.repo
+# 用vim打开文件CentOS-Linux-AppStream.repo、CentOS-Linux-Extras.repo，将原来的mirrorlist给注释掉，然后新增一行：
+baseurl=https://mirrors.aliyun.com/centos/$releasever-stream/extras/$basearch/os/
+# 清理、生成缓存
+yum clean all && yum makecache
+# 安装docker
+yum install -y yum-utils
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+yum install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl start docker
+docker run hello-world
+```
+
+### 安装kubectl
+
+```shell
+# centos8安装kubectl
+cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=http://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+gpgkey=http://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+EOF
+yum install -y kubectl
+```
+
+### 安装kind
+
+```shell
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.17.0/kind-linux-amd64
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+```
+
+### 通过kind创建k8s集群
+
+```shell
+cat <<EOF > config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+EOF
+kind create cluster --config config.yaml
+```
+
+### 部署镜像到k8s
+
+```shell
+# 部署一个flask框架的web应用
+cat <<EOF > flask-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-world-flask
+spec:
+  containers:
+    - name: flask
+      image: lyzhang1999/hello-world-flask:latest
+      ports:
+        - containerPort: 5000
+EOF
+kubectl apply -f flask-pod.yaml
+# 查看和访问 Pod
+kubectl get pods
+# 端口转发（是前台运行的）
+kubectl port-forward pod/hello-world-flask 8000:5000
+# 开启另外一个shell窗口
+curl 127.0.0.1::8000
+# 输出：Hello, my first docker images! hello-world-flask
+# 进入到 Pod 容器内部
+kubectl exec -it hello-world-flask -- bash
+# 删除pod
+kubectl delete pod hello-world-flask
+```
+
+## k8s扩容及自愈入门
+
+```shell
+#创建 deployment
+kubectl create deployment hello-world-flask --image=lyzhang1999/hello-world-flask:latest --replicas=2
+# 生成deployment的yaml文件
+kubectl create deployment hello-world-flask --image lyzhang1999/hello-world-flask:latest --replicas=2 --dry-run=client -o yaml
+# 创建 service
+kubectl create service clusterip hello-world-flask --tcp=5000:5000
+# 创建 ingress
+kubectl create ingress hello-world-flask --rule="/=hello-world-flask:5000"
+# 创建 ingress-nginx
+kubectl create -f https://ghproxy.com/https://raw.githubusercontent.com/lyzhang1999/resource/main/ingress-nginx/ingress-nginx.yaml
+# 访问测试
+while true; do sleep 1; curl http://127.0.0.1; echo -e '\n'$(date);done
+# 模拟宕机
+kubectl exec -it hello-world-flask-56fbff68c8-2xz7w -- bash -c "killall python3"
+# 创建 metric server
+kubectl apply -f https://ghproxy.com/https://raw.githubusercontent.com/lyzhang1999/resource/main/metrics/metrics.yaml
+# 等待deployment创建成功
+kubectl wait deployment -n kube-system metrics-server --for condition=Available=True --timeout=90s
+# 创建自动扩容策略
+kubectl autoscale deployment hello-world-flask --cpu-percent=50 --min=2 --max=10
+# deployment 设置资源配额
+kubectl patch deployment hello-world-flask --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/resources", "value": {"requests": {"memory": "100Mi", "cpu": "100m"}}}]'
+# 查看最新创建的pod
+kubectl get pod --field-selector=status.phase==Running
+# 创建并发请求
+kubectl exec -it hello-world-flask-64dd645c57-4clbp -- ab -c 50 -n 10000 http://127.0.0.1:5000/
+# 持续监控 Pod 的状态
+kubectl get pods --watch
+```
+
+
+
+## k8s实现自动发布及回滚
+
